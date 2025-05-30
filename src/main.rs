@@ -24,17 +24,38 @@ fn setup() -> Result<*mut sys::CUctx_st, DriverError> {
     Ok(ctx)
 }
 
+fn bytes_to_human_readable(bytes_usize: usize) -> String {
+    let mut running = bytes_usize as f64;
+    if running < 1024.0 {
+        return format!("{:.2} B", running);
+    }
+    running /= 1024.0;
+    if running < 1024.0 {
+        return format!("{:.2} KB", running);
+    }
+    running /= 1024.0;
+    if running < 1024.0 {
+        return format!("{:.2} MB", running);
+    }
+    running /= 1024.0;
+    if running < 1024.0 {
+        return format!("{:.2} GB", running);
+    }
+    running /= 1024.0;
+    if running < 1024.0 {
+        return format!("{:.2} TB", running);
+    }
+    format!("{:.2} PB", running / 1024.0)
+}
+
 fn fn1() -> Result<(), DriverError> {
     log!("Hello from fn1");
 
     let _ = setup()?;
 
-    // cuMemCreate
-    let size = 1024;
     let prop = sys::CUmemAllocationProp {
         type_: sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED,
-        requestedHandleTypes:
-            sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+        requestedHandleTypes: sys::CUmemAllocationHandleType::CU_MEM_HANDLE_TYPE_FABRIC,
         location: sys::CUmemLocation {
             type_: sys::CUmemLocationType::CU_MEM_LOCATION_TYPE_DEVICE,
             id: 0,
@@ -47,6 +68,18 @@ fn fn1() -> Result<(), DriverError> {
         },
         win32HandleMetaData: std::ptr::null_mut(),
     };
+
+    let granularity = unsafe {
+        let mut pgranularity = MaybeUninit::uninit();
+        let opt = sys::CUmemAllocationGranularity_flags_enum::CU_MEM_ALLOC_GRANULARITY_MINIMUM;
+        sys::cuMemGetAllocationGranularity(pgranularity.as_mut_ptr(), &prop, opt).result()?;
+        pgranularity.assume_init()
+    };
+    log!("granularity: 0x{:x?}", granularity);
+    log!("granularity: {}", bytes_to_human_readable(granularity));
+
+    // cuMemCreate
+    let size = 0x200000;
 
     log!("prop: {:?}", prop);
 
