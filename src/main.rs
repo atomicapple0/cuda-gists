@@ -81,14 +81,14 @@ fn fn1() -> Result<(), DriverError> {
     // cuMemCreate
     let size = 0x200000;
 
-    log!("prop: {:?}", prop);
+    log!("prop: {:#?}", prop);
 
     let mem = unsafe {
         let mut phandle = MaybeUninit::uninit();
         sys::cuMemCreate(phandle.as_mut_ptr(), size, &prop, 0).result()?;
         phandle.assume_init()
     };
-    log!("mem created: {:?}", mem);
+    log!("mem created: {:x?}", mem);
 
     Ok(())
 }
