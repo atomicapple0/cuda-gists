@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 colored = "3.0.0"
 cudarc = { version = "0.16.4", features = ["cuda-12080"] }
+itertools = "0.14.0"
+libc = "0.2.178"
