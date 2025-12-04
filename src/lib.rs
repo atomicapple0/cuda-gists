@@ -1,29 +1,46 @@
-use cudarc::driver::DriverError;
 use cudarc::driver::sys;
 use std::mem::MaybeUninit;
+use std::sync::LazyLock;
 
 pub mod log;
 
-pub fn setup() -> Result<*mut sys::CUctx_st, DriverError> {
+pub fn cu_init() {
     unsafe { sys::cuInit(0) }.result().unwrap();
+}
 
-    let dev = unsafe {
-        let mut pdev = MaybeUninit::uninit();
-        sys::cuDeviceGet(pdev.as_mut_ptr(), 0).result().unwrap();
-        pdev.assume_init()
-    };
-    log!("dev: {:?}", dev);
+pub static INIT: LazyLock<()> = LazyLock::new(|| {
+    log!("Initializing CUDA");
+    cu_init();
+});
 
-    let ctx = unsafe {
-        let mut pctx = MaybeUninit::uninit();
-        sys::cuCtxCreate_v2(pctx.as_mut_ptr(), 0, dev)
-            .result()
-            .unwrap();
-        pctx.assume_init()
-    };
-    log!("ctx created: {:?}", ctx);
+#[derive(Debug)]
+pub struct Context {
+    pub id: i32,
+    pub ctx: *mut sys::CUctx_st,
+}
 
-    Ok(ctx)
+impl Context {
+    pub fn new(id: i32) -> Self {
+        _ = *INIT;
+
+        let dev = unsafe {
+            let mut pdev = MaybeUninit::uninit();
+            sys::cuDeviceGet(pdev.as_mut_ptr(), 0).result().unwrap();
+            pdev.assume_init()
+        };
+
+        let ctx = unsafe {
+            let mut pctx = MaybeUninit::uninit();
+            sys::cuCtxCreate_v2(pctx.as_mut_ptr(), 0, dev)
+                .result()
+                .unwrap();
+            pctx.assume_init()
+        };
+
+        let ctx = Self { id, ctx };
+        log!("Created {:?}", ctx);
+        ctx
+    }
 }
 
 pub fn bytes_to_human_readable(bytes_usize: usize) -> String {

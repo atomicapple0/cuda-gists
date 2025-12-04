@@ -1,13 +1,12 @@
-use cudarc::driver::DriverError;
 use cudarc::driver::sys;
 use std::mem::MaybeUninit;
 
 use cuda_gists::*;
 
-fn main() -> Result<(), DriverError> {
-    log!("Hello from fn1");
+fn main() {
+    log!("Hello from fabric");
 
-    let _ = setup()?;
+    let _ = Context::new(0);
 
     let prop = sys::CUmemAllocationProp {
         type_: sys::CUmemAllocationType::CU_MEM_ALLOCATION_TYPE_PINNED,
@@ -49,6 +48,4 @@ fn main() -> Result<(), DriverError> {
         phandle.assume_init()
     };
     log!("mem created: {:x?}", mem);
-
-    Ok(())
 }
