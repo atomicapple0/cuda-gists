@@ -29,11 +29,17 @@ pub struct Buffer {
     pub addr: u64,
 }
 
+unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
+
 #[derive(Debug, Clone)]
 pub struct Stream {
     pub ctx: Context,
     pub stream: *mut sys::CUstream_st,
 }
+
+unsafe impl Send for Stream {}
+unsafe impl Sync for Stream {}
 
 impl Stream {
     pub fn create_buffer_async(&self, size: usize, address_space: AddressSpace) -> Buffer {

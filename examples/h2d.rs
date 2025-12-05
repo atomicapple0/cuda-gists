@@ -1,3 +1,5 @@
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
 use itertools::izip;
 
 use cuda_gists::*;
@@ -5,7 +7,7 @@ use cuda_gists::*;
 const ITERS: usize = 3;
 const MB: usize = 1024 * 1024;
 const GB: usize = 1024 * 1024 * 1024;
-const SIZE: usize = 64 * MB;
+const SIZE: usize = 8 * GB;
 
 pub fn compute_bandwidth_gb_s(time: std::time::Duration, size: usize) -> f64 {
     let gb = size as f64 / 1024.0 / 1024.0 / 1024.0;
@@ -313,6 +315,71 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         log!("--- Copy time: {:?}, Sync time: {:?}", copy_time, sync_time);
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
+    }
+
+    log!(
+        "Benchmarking Pinned0 -> GPU0, Pinned1 -> GPU1, Pinned2 -> GPU2, ... (multi thread/stream)"
+    );
+    for _ in 0..ITERS {
+        let streams = streams.clone();
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
+        // let t0 = std::time::Instant::now();
+        // for (pinned_buf, gpu_buf, stream) in izip!(&pinned_bufs, &gpu_bufs, &streams) {
+        //     stream.memcpy_async(gpu_buf, pinned_buf);
+        // }
+        // let t1 = std::time::Instant::now();
+        // for stream in &streams {
+        //     stream.synchronize();
+        // }
+        // let t2 = std::time::Instant::now();
+
+        // let copy_time = t1.duration_since(t0);
+        // let sync_time = t2.duration_since(t1);
+        // log!("--- Copy time: {:?}, Sync time: {:?}", copy_time, sync_time);
+
+        // free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
+
+        let ready_count = Arc::new(AtomicUsize::new(0));
+
+        // launch N threads
+        let n_threads = NUM_DEVICES;
+        let mut threads = Vec::new();
+        for i in 0..n_threads {
+            let streams = streams.clone();
+            let pinned_bufs = pinned_bufs.clone();
+            let gpu_bufs = gpu_bufs.clone();
+            let ready_count = ready_count.clone();
+            threads.push(std::thread::spawn(move || {
+                let stream = &streams[i];
+                let pinned_buf = &pinned_bufs[i];
+                let gpu_buf = &gpu_bufs[i];
+
+                ready_count.fetch_add(1, Ordering::SeqCst);
+                while ready_count.load(Ordering::SeqCst) < n_threads {
+                    std::thread::yield_now();
+                }
+
+                let t0 = std::time::Instant::now();
+                stream.memcpy_async(&gpu_buf, &pinned_buf);
+                let t1 = std::time::Instant::now();
+
+                stream.synchronize();
+                let t2 = std::time::Instant::now();
+
+                let copy_time = t1.duration_since(t0);
+                let sync_time = t2.duration_since(t1);
+                if i == 0 {
+                    log!("--- Copy time: {:?}, Sync time: {:?}", copy_time, sync_time);
+                }
+            }));
+        }
+
+        for thread in threads {
+            thread.join().unwrap();
+        }
 
         free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
