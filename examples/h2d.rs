@@ -3,11 +3,67 @@ use itertools::izip;
 use cuda_gists::*;
 
 const ITERS: usize = 3;
+const MB: usize = 1024 * 1024;
 const GB: usize = 1024 * 1024 * 1024;
+const SIZE: usize = 64 * MB;
 
 pub fn compute_bandwidth_gb_s(time: std::time::Duration, size: usize) -> f64 {
     let gb = size as f64 / 1024.0 / 1024.0 / 1024.0;
     gb / time.as_secs_f64()
+}
+
+pub fn create_bufs(streams: &[Stream], touch: bool) -> (Buffer, Vec<Buffer>, Vec<Buffer>) {
+    let pageable_bufs = streams[0].create_buffer_async(SIZE, AddressSpace::Cpu);
+
+    let pinned_bufs = streams
+        .iter()
+        .map(|stream| stream.create_buffer_async(SIZE, AddressSpace::Pinned))
+        .collect::<Vec<_>>();
+
+    let gpu_bufs = streams
+        .iter()
+        .map(|stream| stream.create_buffer_async(SIZE, AddressSpace::Device))
+        .collect::<Vec<_>>();
+
+    for stream in streams {
+        stream.synchronize();
+    }
+
+    // write random values to the pageable and pinned buffers
+    // write 1 byte to start of ech 4k page
+    if touch {
+        let page_size = 1024;
+        // Write to every 4k page in pinned_bufs and the single pageable_bufs
+        for buf in pinned_bufs.iter().chain(std::iter::once(&pageable_bufs)) {
+            let num_pages = buf.size / page_size;
+            for idx in 0..num_pages {
+                let page_start = idx * page_size;
+                let page_data = (buf.addr as *mut u8).wrapping_add(page_start);
+                unsafe { *page_data = idx as u8 };
+            }
+        }
+    }
+
+    (pageable_bufs, pinned_bufs, gpu_bufs)
+}
+
+pub fn free_bufs(
+    streams: &[Stream],
+    pageable_bufs: Buffer,
+    pinned_bufs: Vec<Buffer>,
+    gpu_bufs: Vec<Buffer>,
+) {
+    for (stream, buf) in izip!(streams.iter(), pinned_bufs.iter()) {
+        stream.free_buffer_sync(&buf);
+    }
+    for (stream, buf) in izip!(streams.iter(), gpu_bufs.iter()) {
+        stream.free_buffer_sync(&buf);
+    }
+    streams[0].free_buffer_sync(&pageable_bufs);
+
+    for stream in streams {
+        stream.synchronize();
+    }
 }
 
 fn main() {
@@ -23,18 +79,6 @@ fn main() {
         .map(|ctx| ctx.create_stream())
         .collect::<Vec<_>>();
 
-    let pageable_bufs = streams[0].create_buffer_async(8 * GB, AddressSpace::Cpu);
-
-    let pinned_bufs = streams
-        .iter()
-        .map(|stream| stream.create_buffer_async(8 * GB, AddressSpace::Pinned))
-        .collect::<Vec<_>>();
-
-    let gpu_bufs = streams
-        .iter()
-        .map(|stream| stream.create_buffer_async(8 * GB, AddressSpace::Device))
-        .collect::<Vec<_>>();
-
     let events = ctxs
         .iter()
         .map(|ctx| ctx.create_event())
@@ -46,6 +90,8 @@ fn main() {
 
     log!("Benchmarking GPU0 -> GPU1 P2P");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         streams[0].memcpy_async(&gpu_bufs[1], &gpu_bufs[0]);
         let t1 = std::time::Instant::now();
@@ -57,17 +103,21 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, 8 * GB);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
         log!(
             "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
             copy_time,
             sync_time,
             bw
         );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pageable -> GPU0");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         streams[0].memcpy_async(&gpu_bufs[0], &pageable_bufs);
         let t1 = std::time::Instant::now();
@@ -79,17 +129,47 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, 8 * GB);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
         log!(
             "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
             copy_time,
             sync_time,
             bw
         );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
+    }
+
+    log!("Benchmarking Pageable -> GPU0 (touch=True)");
+    for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, true);
+
+        let t0 = std::time::Instant::now();
+        streams[0].memcpy_async(&gpu_bufs[0], &pageable_bufs);
+        let t1 = std::time::Instant::now();
+        for stream in &streams {
+            stream.synchronize();
+        }
+        let t2 = std::time::Instant::now();
+
+        let copy_time = t1.duration_since(t0);
+        let sync_time = t2.duration_since(t1);
+        let total_time = t2.duration_since(t0);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
+        log!(
+            "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+            copy_time,
+            sync_time,
+            bw
+        );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pinned0 -> GPU0");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         streams[0].memcpy_async(&gpu_bufs[0], &pinned_bufs[0]);
         let t1 = std::time::Instant::now();
@@ -101,17 +181,47 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, 8 * GB);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
         log!(
             "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
             copy_time,
             sync_time,
             bw
         );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
+    }
+
+    log!("Benchmarking Pinned0 -> GPU0 (touch=True)");
+    for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, true);
+
+        let t0 = std::time::Instant::now();
+        streams[0].memcpy_async(&gpu_bufs[0], &pinned_bufs[0]);
+        let t1 = std::time::Instant::now();
+        for stream in &streams {
+            stream.synchronize();
+        }
+        let t2 = std::time::Instant::now();
+
+        let copy_time = t1.duration_since(t0);
+        let sync_time = t2.duration_since(t1);
+        let total_time = t2.duration_since(t0);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
+        log!(
+            "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+            copy_time,
+            sync_time,
+            bw
+        );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pinned0 -> GPU1");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         streams[1].memcpy_async(&gpu_bufs[1], &pinned_bufs[0]);
         let t1 = std::time::Instant::now();
@@ -123,17 +233,21 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, 8 * GB);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
         log!(
             "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
             copy_time,
             sync_time,
             bw
         );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pageable -> Pinned0");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         streams[0].memcpy_async(&pinned_bufs[0], &pageable_bufs);
         let t1 = std::time::Instant::now();
@@ -145,17 +259,47 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, 8 * GB);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
         log!(
             "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
             copy_time,
             sync_time,
             bw
         );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
+    }
+
+    log!("Benchmarking Pageable -> Pinned0 (touch=True)");
+    for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, true);
+
+        let t0 = std::time::Instant::now();
+        streams[0].memcpy_async(&pinned_bufs[0], &pageable_bufs);
+        let t1 = std::time::Instant::now();
+        for stream in &streams {
+            stream.synchronize();
+        }
+        let t2 = std::time::Instant::now();
+
+        let copy_time = t1.duration_since(t0);
+        let sync_time = t2.duration_since(t1);
+        let total_time = t2.duration_since(t0);
+        let bw = compute_bandwidth_gb_s(total_time, SIZE);
+        log!(
+            "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+            copy_time,
+            sync_time,
+            bw
+        );
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pinned0 -> GPU0, Pinned1 -> GPU1, Pinned2 -> GPU2, ... (multi stream)");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         for (pinned_buf, gpu_buf, stream) in izip!(&pinned_bufs, &gpu_bufs, &streams) {
             stream.memcpy_async(gpu_buf, pinned_buf);
@@ -169,10 +313,14 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         log!("--- Copy time: {:?}, Sync time: {:?}", copy_time, sync_time);
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pinned0 -> GPU0, GPU1, GPU2, ... (multi stream)");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         let pinned0 = pinned_bufs[0].clone();
         for (stream, gpu_buf) in izip!(&streams, &gpu_bufs) {
@@ -187,10 +335,14 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         log!("--- Copy time: {:?}, Sync time: {:?}", copy_time, sync_time);
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 
     log!("Benchmarking Pinned -> GPU0 -> GPU1, GPU2, GPU3, ... (multi stream)");
     for _ in 0..ITERS {
+        let (pageable_bufs, pinned_bufs, gpu_bufs) = create_bufs(&streams, false);
+
         let t0 = std::time::Instant::now();
         streams[0].memcpy_async(&gpu_bufs[0], &pinned_bufs[0]);
         streams[0].record_event(&events[0]);
@@ -208,5 +360,7 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         log!("--- Copy time: {:?}, Sync time: {:?}", copy_time, sync_time);
+
+        free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
 }

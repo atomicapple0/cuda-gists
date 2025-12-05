@@ -63,6 +63,17 @@ impl Stream {
         }
     }
 
+    pub fn free_buffer_sync(&self, buf: &Buffer) {
+        self.ctx.set_current();
+        match buf.address_space {
+            AddressSpace::Device => unsafe { sys::cuMemFree_v2(buf.addr) }.result().unwrap(),
+            AddressSpace::Pinned => unsafe { sys::cuMemFreeHost(buf.addr as *mut libc::c_void) }
+                .result()
+                .unwrap(),
+            AddressSpace::Cpu => unsafe { libc::free(buf.addr as *mut libc::c_void) },
+        }
+    }
+
     pub fn memcpy_async(&self, dst: &Buffer, src: &Buffer) {
         self.ctx.set_current();
         if dst.size != src.size {
