@@ -152,7 +152,9 @@ impl Context {
 
         let dev = unsafe {
             let mut pdev = MaybeUninit::uninit();
-            sys::cuDeviceGet(pdev.as_mut_ptr(), 0).result().unwrap();
+            sys::cuDeviceGet(pdev.as_mut_ptr(), device_id)
+                .result()
+                .unwrap();
             pdev.assume_init()
         };
 
