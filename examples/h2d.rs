@@ -3,14 +3,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use cudarc::driver::sys;
 use itertools::izip;
 
 use cuda_gists::*;
 
 const ITERS: usize = 3;
 const MB: usize = 1024 * 1024;
-const GB: usize = 1024 * 1024 * 1024;
 const SIZE: usize = 8 * MB;
 
 pub fn compute_bandwidth_gb_s(time: std::time::Duration, size: usize) -> f64 {
@@ -90,22 +88,8 @@ fn main() {
         .map(|ctx| ctx.create_event())
         .collect::<Vec<_>>();
 
-    // After creating ctxs and streams, before any benchmarks:
     log!("Enabling peer access");
-    for i in 0..NUM_DEVICES {
-        for j in 0..NUM_DEVICES {
-            if i != j {
-                ctxs[i].set_current();
-                let result = unsafe { sys::cuCtxEnablePeerAccess(ctxs[j].ctx, 0) };
-                match result {
-                    sys::cudaError_enum::CUDA_SUCCESS => {}
-                    sys::cudaError_enum::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED => {}
-                    e => panic!("cuCtxEnablePeerAccess({i}->{j}) failed: {e:?}"),
-                }
-            }
-        }
-    }
-
+    enable_peer_access(&ctxs);
     for stream in &streams {
         stream.synchronize();
     }
@@ -337,8 +321,13 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES*SIZE);
-        log!("--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s", copy_time, sync_time, bw);
+        let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES * SIZE);
+        log!(
+            "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+            copy_time,
+            sync_time,
+            bw
+        );
 
         free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
@@ -396,9 +385,14 @@ fn main() {
                 let copy_time = t1.duration_since(t0);
                 let sync_time = t2.duration_since(t1);
                 let total_time = t2.duration_since(t0);
-                let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES*SIZE);
+                let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES * SIZE);
                 if i == 0 {
-                    log!("--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s", copy_time, sync_time, bw);
+                    log!(
+                        "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+                        copy_time,
+                        sync_time,
+                        bw
+                    );
                 }
             }));
         }
@@ -428,8 +422,13 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES*SIZE);
-        log!("--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s", copy_time, sync_time, bw);
+        let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES * SIZE);
+        log!(
+            "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+            copy_time,
+            sync_time,
+            bw
+        );
 
         free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }
@@ -455,8 +454,13 @@ fn main() {
         let copy_time = t1.duration_since(t0);
         let sync_time = t2.duration_since(t1);
         let total_time = t2.duration_since(t0);
-        let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES*SIZE);
-        log!("--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s", copy_time, sync_time, bw);
+        let bw = compute_bandwidth_gb_s(total_time, NUM_DEVICES * SIZE);
+        log!(
+            "--- Copy time: {:?}, Sync time: {:?}, Bandwidth: {:.2} GB/s",
+            copy_time,
+            sync_time,
+            bw
+        );
 
         free_bufs(&streams, pageable_bufs, pinned_bufs, gpu_bufs);
     }

@@ -4,6 +4,7 @@ use std::mem::MaybeUninit;
 use std::sync::LazyLock;
 
 pub mod log;
+pub mod numa;
 
 pub fn cu_init() {
     unsafe { sys::cuInit(0) }.result().unwrap();
@@ -54,7 +55,7 @@ impl Stream {
             },
             AddressSpace::Pinned => unsafe {
                 let mut pbuffer = MaybeUninit::uninit();
-                sys::cuMemAllocHost_v2(pbuffer.as_mut_ptr(), size)
+                sys::cuMemHostAlloc(pbuffer.as_mut_ptr(), size, 0)
                     .result()
                     .unwrap();
                 pbuffer.assume_init() as u64
@@ -131,6 +132,24 @@ impl Stream {
         unsafe { sys::cuStreamWaitEvent(self.stream, event.event, 0) }
             .result()
             .unwrap();
+    }
+}
+
+/// Enable peer access between all context pairs (required for some cross-GPU host copies).
+pub fn enable_peer_access(ctxs: &[Context]) {
+    for i in 0..ctxs.len() {
+        for j in 0..ctxs.len() {
+            if i == j {
+                continue;
+            }
+            ctxs[i].set_current();
+            let result = unsafe { sys::cuCtxEnablePeerAccess(ctxs[j].ctx, 0) };
+            match result {
+                sys::cudaError_enum::CUDA_SUCCESS => {}
+                sys::cudaError_enum::CUDA_ERROR_PEER_ACCESS_ALREADY_ENABLED => {}
+                e => panic!("cuCtxEnablePeerAccess({i}->{j}) failed: {e:?}"),
+            }
+        }
     }
 }
 
